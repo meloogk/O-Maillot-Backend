@@ -5,6 +5,6 @@ const router = express.Router()
 
 /************ Authentification  ******************/
 router.post("/inscription",InscriptionUtilisateur)
-router.post("/connnexion",ConnexionUtilisateur)
+router.post("/connexion",ConnexionUtilisateur)
 
 export default router

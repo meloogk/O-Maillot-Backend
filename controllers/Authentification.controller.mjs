@@ -75,8 +75,8 @@ export const ConnexionUtilisateur = async (req,res) => {
             data: {
                 nom: userExist.nom,
                 email: userExist.email,
-                adresse: userExist.adresse
-                // tu peux ajouter d'autres infos utiles ici
+                adresse: userExist.adresse,
+                telephone:userExist.telephone
             }
         })
         } else {
