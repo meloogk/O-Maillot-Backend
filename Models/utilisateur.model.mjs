@@ -4,8 +4,9 @@ const { model, Schema } = mongoose
 const UtilisateurSchema = new Schema({
     nom: { type: String, required: true },
     email: { type: String, required: true, unique: true },
-    motDePasse: { type: String, required: true },
-    
+   motDePasse: { type: String, required: true },
+    // typeConnexion: {type: String,enum: ["email", "google.com", "facebook.com", "github.com", "apple.com", "microsoft.com"], default: "email" },
+    // uidFirebase: { type: String, default: null},
     rôle: { type: String, enum: ['utilisateur', 'admin'], default: 'utilisateur' },
     adresse: { type: Object },
     telephone: { type: String },

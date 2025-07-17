@@ -5,7 +5,7 @@ const PaiementSchema = new Schema({
     commande: { type: mongoose.Schema.Types.ObjectId, ref: 'Commande', required: true},
     utilisateur: {type: mongoose.Schema.Types.ObjectId, ref: 'Utilisateur',required: true},
     méthode: { type: String, enum: ['carte', 'paypal', 'stripe'],required: true},
-    statut: { type: String,enum:['carte', 'paypal', 'stripe','cash','mobile money'], default: 'en attente'},
+    statut: { type: String,enum:['en attente', 'payée', 'échouée', 'remboursée'], default: 'en attente'},
     montant: { type: Number,required: true},
     devise: {type: String,default: 'FCFA'},
     transactionId: {type: String, required: false},
