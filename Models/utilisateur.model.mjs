@@ -10,6 +10,7 @@ const UtilisateurSchema = new Schema({
     rôle: { type: String, enum: ['utilisateur', 'admin'], default: 'utilisateur' },
     adresse: { type: Object },
     telephone: { type: String },
+    photo: { type: String }, 
     favoris: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Produit' }],
     listeSouhaits: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Produit' }],
     pointsFidélité: { type: Number, default: 0 },
