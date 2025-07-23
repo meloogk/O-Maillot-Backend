@@ -12,4 +12,5 @@ if (!admin.apps.length) {
   })
 }
 
-export default admin
+const adminAuth = admin.auth();
+export   { admin, adminAuth };

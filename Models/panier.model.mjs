@@ -1,16 +1,56 @@
-import mongoose from "mongoose";
-const { model, Schema } = mongoose
+import mongoose from 'mongoose';
 
-const articlePanierSchema = new Schema({
-    produit: { type: mongoose.Schema.Types.ObjectId, ref: 'Produit', required: true },
-    quantité: { type: Number, required: true },
-    taille: { type: String, enum:['XS','S', 'M', 'L', 'XL','XXL'], required: true }
+const ArticlePanierSchema = new mongoose.Schema({
+  produit: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'Produit', 
+    required: [true, 'Le produit est requis'], 
+    index: true 
+  },
+  quantité: { 
+    type: Number, 
+    required: [true, 'La quantité est requise'], 
+    min: [1, 'La quantité doit être au moins 1'] 
+  },
+  taille: { 
+    type: String, 
+    enum: {
+      values: ['XS', 'S', 'M', 'L', 'XL', 'XXL'],
+      message: 'La taille doit être XS, S, M, L, XL ou XXL'
+    }, 
+    required: [true, 'La taille est requise'] 
+  },
 });
 
-const PanierSchema = new Schema({
-  utilisateur: { type: mongoose.Schema.Types.ObjectId, ref: 'Utilisateur', unique: true },
-  articles: [articlePanierSchema],
-  misÀJourLe: { type: Date, default: Date.now }
-    })
+const PanierSchema = new mongoose.Schema({
+  utilisateur: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'Utilisateur', 
+    index: { sparse: true } 
+  },
+  sessionId: { 
+    type: String, 
+    index: { sparse: true } 
+  },
+  articles: {
+    type: [ArticlePanierSchema],
+    default: [],
+  },
+}, { 
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
 
-    export const PanierSchemaModel = model.Panier || model("Panier", PanierSchema)
+// Validation pour garantir utilisateur ou sessionId
+PanierSchema.pre('validate', function (next) {
+  if (!this.utilisateur && !this.sessionId) {
+    next(new Error('Le panier doit être associé à un utilisateur ou à un sessionId'));
+  } else if (this.utilisateur && this.sessionId) {
+    next(new Error('Le panier ne peut pas être associé à un utilisateur et à un sessionId simultanément'));
+  } else {
+    next();
+  }
+});
+
+export const PanierSchemaModel = mongoose.model('Panier', PanierSchema);

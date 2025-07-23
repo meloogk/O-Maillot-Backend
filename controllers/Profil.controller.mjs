@@ -1,88 +1,175 @@
-import fs from "fs";
-import { MongoConnected } from "../Database/database.mjs";
-import { UtilisateurSchemaModel } from "../Models/utilisateur.model.mjs";
+import mongoose from 'mongoose';
+import { MongoConnected } from '../Database/database.mjs';
+import { UtilisateurSchemaModel } from '../Models/utilisateur.model.mjs';
+import { PanierSchemaModel } from '../models/Panier.model.mjs';
+import { CommandeSchemaModel } from '../models/Commande.model.mjs';
+import { PaiementSchemaModel } from '../Models/paiement.model.mjs';
+import { HistoriquePaiementSchemaModel } from '../Models/historique_Paiement.model.mjs';
+import cloudinary from '../config/cloudinary.mjs';
+
 
 export const ObtenirProfilUtilisateur = async (req, res) => {
   try {
     const db = await MongoConnected();
-    if (db !== "ok") return res.status(500).json({ message: "Erreur connexion DB" });
+    if (db !== 'ok') {
+      return res.status(500).json({ message: 'Erreur de connexion à la base de données' });
+    }
 
-    const utilisateur = await UtilisateurSchemaModel.findById(req.user.id).select("-motDePasse");
-    if (!utilisateur) return res.status(404).json({ message: "Utilisateur non trouvé" });
+    const userId = req.user?.id;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: 'Utilisateur non connecté' });
+    }
 
-    res.status(200).json(utilisateur);
+    const utilisateur = await UtilisateurSchemaModel.findById(userId)
+      .select('-motDePasse')
+      .lean();
+    if (!utilisateur) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: 'Compte inactif' });
+    }
+
+    // Inclure reductionAppliquée dans la réponse
+    const utilisateurData = {
+      ...utilisateur,
+      reductionAppliquée: utilisateur.reductionAppliquée || 0,
+    };
+
+    res.status(200).json(utilisateurData);
   } catch (error) {
-    res.status(500).json({ message: "Erreur serveur", error });
+    console.error('Erreur dans ObtenirProfilUtilisateur:', error);
+    res.status(500).json({ message: 'Erreur serveur', error: error.message });
   }
 };
 
 export const ModifierProfilUtilisateur = async (req, res) => {
   try {
     const db = await MongoConnected();
-    if (db !== "ok") return res.status(500).json({ message: "Erreur connexion DB" });
+    if (db !== 'ok') {
+      return res.status(500).json({ message: 'Erreur de connexion à la base de données' });
+    }
+
+    const userId = req.user?.id;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: 'Utilisateur non connecté' });
+    }
 
     const { nom, telephone, adresse } = req.body;
-    const utilisateur = await UtilisateurSchemaModel.findById(req.user.id);
+    const file = req.file;
 
-    if (!utilisateur) return res.status(404).json({ message: "Utilisateur non trouvé" });
+    const utilisateur = await UtilisateurSchemaModel.findById(userId);
+    if (!utilisateur) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
 
-    // Mise à jour des champs texte
-    utilisateur.nom = nom || utilisateur.nom;
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: 'Compte inactif' });
+    }
+
+    // Validation des champs
+    if (nom) utilisateur.nom = nom;
+    if (telephone && !/^\+?[1-9]\d{1,14}$/.test(telephone)) {
+      return res.status(400).json({ message: 'Numéro de téléphone invalide (2 à 15 chiffres)' });
+    }
     utilisateur.telephone = telephone || utilisateur.telephone;
-    utilisateur.adresse = adresse || utilisateur.adresse;
 
-    // Gestion de la photo de profil
-    if (req.file) {
-      // Supprimer l’ancienne photo si elle existe (avec chemin absolu)
-      if (utilisateur.photo) {
-        const cheminAnciennePhoto = path.resolve(utilisateur.photo);
-        if (fs.existsSync(cheminAnciennePhoto)) {
-          fs.unlink(cheminAnciennePhoto, (err) => {
-            if (err) console.error("Erreur suppression ancienne photo :", err);
-          });
+    if (adresse) {
+      try {
+        const parsedAdresse = typeof adresse === 'string' ? JSON.parse(adresse) : adresse;
+        if (!parsedAdresse.rue || !parsedAdresse.ville || !parsedAdresse.codePostal || !parsedAdresse.pays) {
+          return res.status(400).json({ message: 'Adresse incomplète (rue, ville, codePostal, pays requis)' });
         }
+        utilisateur.adresse = parsedAdresse;
+      } catch (error) {
+        return res.status(400).json({ message: 'Format d’adresse invalide' });
+      }
+    }
+
+    // Gestion de la photo de profil avec Cloudinary
+    if (file) {
+      // Supprimer l’ancienne photo si elle existe
+      if (utilisateur.photo) {
+        const publicId = utilisateur.photo.split('/').pop().split('.')[0];
+        await cloudinary.uploader.destroy(publicId).catch(err => {
+          console.error('Erreur suppression ancienne photo Cloudinary:', err);
+        });
       }
 
-      // Enregistrer le chemin relatif pour stockage en base
-      utilisateur.photo = `uploads/photos_profil/${req.file.filename}`;
+      // Uploader la nouvelle photo
+      const result = await cloudinary.uploader.upload(file.path);
+      utilisateur.photo = result.secure_url;
     }
 
     await utilisateur.save();
 
-    // Préparer les données à renvoyer avec URL complète
-    const utilisateurData = utilisateur.toObject();
-    if (utilisateur.photo) {
-      utilisateurData.photo = `${req.protocol}://${req.get("host")}/${utilisateur.photo}`;
-    }
+    // Préparer les données à renvoyer
+    const utilisateurData = utilisateur.toObject({ virtuals: true });
+    delete utilisateurData.motDePasse;
 
     res.status(200).json({
-      message: "Profil mis à jour avec succès",
+      message: 'Profil mis à jour avec succès',
       utilisateur: utilisateurData,
     });
   } catch (error) {
-    res.status(500).json({ message: "Erreur serveur", error: error.message });
+    console.error('Erreur dans ModifierProfilUtilisateur:', error);
+    res.status(500).json({ message: 'Erreur serveur', error: error.message });
   }
 };
 
 export const SupprimerCompteUtilisateur = async (req, res) => {
   try {
     const db = await MongoConnected();
-    if (db !== "ok") return res.status(500).json({ message: "Erreur connexion DB" });
+    if (db !== 'ok') {
+      return res.status(500).json({ message: 'Erreur de connexion à la base de données' });
+    }
 
-    const utilisateur = await UtilisateurSchemaModel.findById(req.user.id);
-    if (!utilisateur) return res.status(404).json({ message: "Utilisateur non trouvé" });
+    const userId = req.user?.id;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: 'Utilisateur non connecté' });
+    }
 
-    // Supprimer la photo de profil si elle existe
-    if (utilisateur.photo && fs.existsSync(utilisateur.photo)) {
-      fs.unlink(utilisateur.photo, (err) => {
-        if (err) console.error("Erreur suppression photo lors de la suppression du compte :", err);
+    const utilisateur = await UtilisateurSchemaModel.findById(userId);
+    if (!utilisateur) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: 'Compte inactif' });
+    }
+
+    // Supprimer la photo de profil de Cloudinary
+    if (utilisateur.photo) {
+      const publicId = utilisateur.photo.split('/').pop().split('.')[0];
+      await cloudinary.uploader.destroy(publicId).catch(err => {
+        console.error('Erreur suppression photo Cloudinary:', err);
       });
     }
 
-    await UtilisateurSchemaModel.findByIdAndDelete(req.user.id);
+    // Suppressions en cascade
+    await Promise.all([
+      // Supprimer le panier
+      PanierSchemaModel.deleteOne({ utilisateur: userId }),
+      // Supprimer les commandes
+      CommandeSchemaModel.deleteMany({ utilisateur: userId }),
+      // Supprimer les paiements
+      PaiementSchemaModel.deleteMany({ utilisateur: userId }),
+      // Supprimer l’historique des paiements
+      HistoriquePaiementSchemaModel.deleteMany({ utilisateur: userId }),
+      // Retirer l’utilisateur des personnesParrainees des autres utilisateurs
+      UtilisateurSchemaModel.updateMany(
+        { personnesParrainees: userId },
+        { $pull: { personnesParrainees: userId } }
+      ),
+    ]);
 
-    res.status(200).json({ message: "Compte supprimé avec succès" });
+    // Supprimer l’utilisateur
+    await UtilisateurSchemaModel.findByIdAndDelete(userId);
+
+    res.status(200).json({ message: 'Compte supprimé avec succès' });
   } catch (error) {
-    res.status(500).json({ message: "Erreur serveur", error: error.message });
+    console.error('Erreur dans SupprimerCompteUtilisateur:', error);
+    res.status(500).json({ message: 'Erreur serveur', error: error.message });
   }
 };
