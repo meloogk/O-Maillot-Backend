@@ -1,9 +1,9 @@
 import mongoose from 'mongoose';
 import { MongoConnected } from '../Database/database.mjs';
 import { ObjectifVenteSchemaModel } from '../Models/objectifs_vente.model.mjs';
-import { CommandeSchemaModel } from '../Models/Commande.model.mjs';
+import { CommandeSchemaModel } from '../models/Commande.model.mjs';
 import { UtilisateurSchemaModel } from '../Models/utilisateur.model.mjs';
-import { ProduitSchemaModel } from '../Models/Produit.model.mjs';
+import { ProduitSchemaModel } from '../models/Produit.model.mjs';
 import { DefiSchemaModel } from '../Models/defi.model.mjs';
 import { convertCurrency } from '../config/exchangerate.mjs';
 

@@ -18,6 +18,7 @@ import { createFacture, getFactures, getFactureById, getFacturePDF } from "../co
 import { createHistoriquePaiement, getHistoriquePaiements, getHistoriquePaiementById, deleteHistoriquePaiement } from "../controllers/Historique_paiement.controller.mjs"
 import { ObtenirProfilUtilisateur, ModifierProfilUtilisateur, SupprimerCompteUtilisateur } from "../controllers/Profil.controller.mjs"
 import { CreerDefi, ObtenirDefis } from "../controllers/Defi.controller.mjs"
+import { CreerObjectifVente,ObtenirObjectifsVente } from "../controllers/Statistiques.controller.mjs"
 import {getUserRewards,claimAchievement} from "../controllers/Recompenses.controller.mjs"
 import { UtiliserCodeParrainage } from "../controllers/Parrainage.controller.mjs"
 const router = express.Router()
@@ -125,7 +126,7 @@ router.get("/recompenses", verifyToken, getUserRewards);
 router.post("/parrainage", verifyToken, UtiliserCodeParrainage);
 
 // // Routes des objectifs de vente
-// router.post('/admin/objectifs', verifyToken, isSuperAdmin, CreerObjectifVente);
-// router.get('/admin/objectifs', verifyToken, isSuperAdmin, ObtenirObjectifsVente);
+ router.post('/admin/objectifs', verifyToken, isSuperAdmin, CreerObjectifVente);
+ router.get('/admin/objectifs', verifyToken, isSuperAdmin, ObtenirObjectifsVente);
 
 export default router

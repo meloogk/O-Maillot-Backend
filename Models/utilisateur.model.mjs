@@ -20,7 +20,7 @@ const UtilisateurSchema = new mongoose.Schema(
     },
     motDePasse: {
       type: String,
-      required: [false, 'Le mot de passe est requis pour les connexions par email'], // Rendu facultatif
+      required: [false, 'Le mot de passe est requis pour les connexions par email'],
     },
     typeConnexion: {
       type: String,
@@ -32,7 +32,7 @@ const UtilisateurSchema = new mongoose.Schema(
     },
     uidFirebase: {
       type: String,
-      required: [true, 'L’UID Firebase est requis'], // Rendu requis
+      required: [true, 'L’UID Firebase est requis'],
       unique: true,
     },
     rôle: {
@@ -79,6 +79,10 @@ const UtilisateurSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: [0, 'Les points gagnés par parrainage ne peuvent pas être négatifs'],
+    },
+    codeParrainUtilise: {
+      type: String,
+      default: null,
     },
     badges: [{
       badgeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Badge' },

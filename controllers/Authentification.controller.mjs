@@ -6,7 +6,7 @@ import { nanoid } from 'nanoid';
 // Fonction utilitaire pour formater la réponse utilisateur
 const formatUserResponse = (utilisateur) => {
   const utilisateurData = utilisateur.toObject({ virtuals: true });
-  delete utilisateurData.motDePasse; // Empêche l'exposition du mot de passe
+  delete utilisateurData.motDePasse;
   return {
     nom: utilisateurData.nom,
     email: utilisateurData.email,
@@ -63,7 +63,6 @@ export const registerWithEmail = async (req, res) => {
       return res.status(400).json({ message: 'Email déjà utilisé' });
     }
 
-    // Vérifier si l'utilisateur existe dans Firebase
     console.log('Vérification de l’utilisateur dans Firebase:', { email });
     let userRecord;
     try {
@@ -71,7 +70,6 @@ export const registerWithEmail = async (req, res) => {
       console.log(`Utilisateur trouvé dans Firebase: ${email}, UID: ${userRecord.uid}`);
     } catch (error) {
       if (error.code === 'auth/user-not-found') {
-        // Créer l'utilisateur dans Firebase si non existant
         console.log('Tentative de création d’utilisateur dans Firebase:', { email, nom });
         try {
           userRecord = await adminAuth.createUser({
@@ -101,7 +99,7 @@ export const registerWithEmail = async (req, res) => {
     const utilisateur = new UtilisateurSchemaModel({
       nom,
       email,
-      motDePasse, // Sera crypté par le hook pre('save')
+      motDePasse,
       typeConnexion: 'email',
       uidFirebase: userRecord.uid,
       telephone,
@@ -199,7 +197,7 @@ export const loginWithGoogle = async (req, res) => {
       utilisateur = new UtilisateurSchemaModel({
         nom: name || 'Utilisateur Google',
         email,
-        motDePasse: null, // Pas de mot de passe pour Google
+        motDePasse: null,
         typeConnexion: 'google.com',
         uidFirebase: uid,
         rôle: email === superadminEmail ? 'admin' : 'utilisateur',
@@ -260,7 +258,7 @@ export const loginWithPhone = async (req, res) => {
     if (!utilisateur) {
       utilisateur = new UtilisateurSchemaModel({
         nom: 'Utilisateur Téléphone',
-        motDePasse: null, // Pas de mot de passe pour téléphone
+        motDePasse: null,
         typeConnexion: 'phone',
         uidFirebase: uid,
         telephone: phone_number,

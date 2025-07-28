@@ -5,12 +5,48 @@ export const POINTS_PARRAIN = 75;
 export const POINTS_FILLEUL = 25;
 
 const niveaux = [
-  { nom: 'GBAO', pointsRequis: 0, recompenses: { reduction: 0, livraisonsGratuites: 0, articlesOfferts: 0 }, badgeId: null },
-  { nom: 'Supporteur', pointsRequis: 500, recompenses: { reduction: 5, livraisonsGratuites: 0, articlesOfferts: 0 }, badgeId: null },
-  { nom: 'FANA', pointsRequis: 1500, recompenses: { reduction: 10, livraisonsGratuites: 0, articlesOfferts: 0 }, badgeId: null },
-  { nom: 'VRAI FANA', pointsRequis: 3000, recompenses: { reduction: 15, livraisonsGratuites: 0, articlesOfferts: 0 }, badgeId: null },
-  { nom: 'CR7 VS MESSI', pointsRequis: 7000, recompenses: { reduction: 20, livraisonsGratuites: 2, articlesOfferts: 1 }, badgeId: null },
-  { nom: 'GOAT', pointsRequis: 15000, recompenses: { reduction: 25, livraisonsGratuites: 4, articlesOfferts: 2 }, badgeId: null },
+  {
+    nom: 'GBAO',
+    pointsRequis: 0,
+    recompenses: { reduction: 0, livraisonsGratuites: 0, articlesOfferts: 0 },
+    badgeId: null,
+    color: '#6B7280',
+  },
+  {
+    nom: 'Supporteur',
+    pointsRequis: 500,
+    recompenses: { reduction: 5, livraisonsGratuites: 0, articlesOfferts: 0 },
+    badgeId: null,
+    color: '#10B981',
+  },
+  {
+    nom: 'FANA',
+    pointsRequis: 1500,
+    recompenses: { reduction: 10, livraisonsGratuites: 0, articlesOfferts: 0 },
+    badgeId: null,
+    color: '#3B82F6',
+  },
+  {
+    nom: 'VRAI FANA',
+    pointsRequis: 3000,
+    recompenses: { reduction: 15, livraisonsGratuites: 0, articlesOfferts: 0 },
+    badgeId: null,
+    color: '#8B5CF6',
+  },
+  {
+    nom: 'CR7 VS MESSI',
+    pointsRequis: 7000,
+    recompenses: { reduction: 20, livraisonsGratuites: 2, articlesOfferts: 1 },
+    badgeId: null,
+    color: '#F59E0B',
+  },
+  {
+    nom: 'GOAT',
+    pointsRequis: 15000,
+    recompenses: { reduction: 25, livraisonsGratuites: 4, articlesOfferts: 2 },
+    badgeId: null,
+    color: '#FFD700',
+  },
 ];
 
 export const calculerNiveau = (pointsFidélité) => {
@@ -29,6 +65,7 @@ export const calculerNiveau = (pointsFidélité) => {
     pointsRequis: niveauActuel.pointsRequis,
     recompenses: niveauActuel.recompenses,
     badgeId: niveauActuel.badgeId,
+    color: niveauActuel.color,
     progression: Number(progression.toFixed(2)),
     pointsPourNiveauSuivant: niveauSuivant ? niveauSuivant.pointsRequis - pointsFidélité : 0,
     tousLesNiveaux: niveaux.map(n => ({
@@ -36,6 +73,7 @@ export const calculerNiveau = (pointsFidélité) => {
       pointsRequis: n.pointsRequis,
       recompenses: n.recompenses,
       badgeId: n.badgeId,
+      color: n.color,
     })),
   };
 };

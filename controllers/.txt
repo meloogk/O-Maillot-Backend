@@ -1,0 +1,1953 @@
+utilisateur model : import mongoose from 'mongoose';
+import bcrypt from 'bcrypt';
+import { nanoid } from 'nanoid';
+import { calculerNiveau } from '../utils/recompenses.mjs';
+
+const UtilisateurSchema = new mongoose.Schema(
+  {
+    nom: {
+      type: String,
+      required: [true, 'Le nom est requis'],
+      trim: true,
+    },
+    email: {
+      type: String,
+      required: [true, 'L’email est requis'],
+      unique: true,
+      lowercase: true,
+      index: true,
+      match: [/^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/, 'L’email doit être valide'],
+    },
+    motDePasse: {
+      type: String,
+      required: [false, 'Le mot de passe est requis pour les connexions par email'], // Rendu facultatif
+    },
+    typeConnexion: {
+      type: String,
+      enum: {
+        values: ['email', 'google.com', 'facebook.com', 'github.com', 'apple.com', 'microsoft.com', 'phone'],
+        message: 'Le type de connexion doit être email, google.com, facebook.com, github.com, apple.com, microsoft.com ou phone',
+      },
+      default: 'email',
+    },
+    uidFirebase: {
+      type: String,
+      required: [true, 'L’UID Firebase est requis'], // Rendu requis
+      unique: true,
+    },
+    rôle: {
+      type: String,
+      enum: {
+        values: ['utilisateur', 'admin'],
+        message: 'Le rôle doit être "utilisateur" ou "admin"',
+      },
+      default: 'utilisateur',
+    },
+    adresse: {
+      rue: { type: String },
+      ville: { type: String },
+      codePostal: { type: String },
+      pays: { type: String },
+    },
+    telephone: {
+      type: String,
+      match: [/^\+?[1-9]\d{1,14}$/, 'Le numéro de téléphone doit être valide (2 à 15 chiffres)'],
+    },
+    photo: { type: String },
+    favoris: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Produit', index: true }],
+    pointsFidélité: {
+      type: Number,
+      default: 0,
+      min: [0, 'Les points de fidélité ne peuvent pas être négatifs'],
+    },
+    actif: {
+      type: Boolean,
+      default: true,
+    },
+    codeParrainage: {
+      type: String,
+      unique: true,
+      default: () => nanoid(8),
+    },
+    personnesParrainees: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Utilisateur', index: true }],
+    pointsParrainage: {
+      type: Number,
+      default: 0,
+      min: [0, 'Les points de parrainage ne peuvent pas être négatifs'],
+    },
+    totalEarned: {
+      type: Number,
+      default: 0,
+      min: [0, 'Les points gagnés par parrainage ne peuvent pas être négatifs'],
+    },
+    badges: [{
+      badgeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Badge' },
+      unlockedAt: { type: Date, default: Date.now },
+    }],
+    achievements: [{
+      defiId: { type: mongoose.Schema.Types.ObjectId, ref: 'Defi' },
+      progress: { type: Number, default: 0 },
+      completed: { type: Boolean, default: false },
+      completedAt: { type: Date },
+      claimed: { type: Boolean, default: false },
+    }],
+    streaks: {
+      currentLoginStreak: { type: Number, default: 0 },
+      longestLoginStreak: { type: Number, default: 0 },
+      lastLoginDate: { type: Date },
+    },
+  },
+  {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
+  }
+);
+
+// Champ virtuel pour la réduction appliquée
+UtilisateurSchema.virtual('reductionAppliquée').get(function () {
+  return calculerNiveau(this.pointsFidélité).recompenses.reduction;
+});
+
+// Hachage du mot de passe pour les connexions de type 'email'
+UtilisateurSchema.pre('save', async function (next) {
+  if (this.isModified('motDePasse') && this.typeConnexion === 'email' && this.motDePasse) {
+    this.motDePasse = await bcrypt.hash(this.motDePasse, 10);
+  }
+  next();
+});
+
+// Comparaison du mot de passe
+UtilisateurSchema.methods.comparePassword = async function (candidatePassword) {
+  if (!this.motDePasse || this.typeConnexion !== 'email') return false;
+  return await bcrypt.compare(candidatePassword, this.motDePasse);
+};
+
+export const UtilisateurSchemaModel = mongoose.model('Utilisateur', UtilisateurSchema);                                        parrainage controlleur : import mongoose from 'mongoose';
+import { MongoConnected } from "../Database/database.mjs";
+import { UtilisateurSchemaModel } from '../Models/utilisateur.model.mjs';
+import { POINTS_PARRAIN, POINTS_FILLEUL } from '../utils/recompenses.mjs';
+
+export const UtiliserCodeParrainage = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== 'ok') {
+      return res.status(500).json({ message: 'Erreur de connexion à la base de données' });
+    }
+
+    const userId = req.user?.id;
+    const { codeParrainage } = req.body;
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: 'Token invalide ou manquant' });
+    }
+
+    if (!codeParrainage) {
+      return res.status(400).json({ message: 'Code de parrainage requis' });
+    }
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId);
+    if (!utilisateur) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: 'Compte inactif' });
+    }
+
+    if (utilisateur.codeParrainUtilise) {
+      return res.status(400).json({ message: 'Vous avez déjà utilisé un code de parrainage' });
+    }
+
+    const parrain = await UtilisateurSchemaModel.findOne({ codeParrainage });
+    if (!parrain) {
+      return res.status(400).json({ message: 'Code de parrainage invalide' });
+    }
+
+    if (parrain._id.equals(userId)) {
+      return res.status(400).json({ message: 'Vous ne pouvez pas utiliser votre propre code' });
+    }
+
+    if (parrain.personnesParrainees.includes(userId)) {
+      return res.status(400).json({ message: 'Vous êtes déjà parrainé par cet utilisateur' });
+    }
+
+    // Ajout des points pour le parrain
+    parrain.personnesParrainees.push(userId);
+    parrain.pointsParrainage += POINTS_PARRAIN;
+    parrain.pointsFidélité += POINTS_PARRAIN;
+    parrain.totalEarned += POINTS_PARRAIN;
+    await parrain.save();
+
+    // Ajout des points pour le filleul (utilisateur qui utilise le code)
+    utilisateur.pointsFidélité += POINTS_FILLEUL;
+    utilisateur.totalEarned += POINTS_FILLEUL;
+    utilisateur.codeParrainUtilise = codeParrainage;
+    await utilisateur.save();
+
+    return res.status(200).json({
+      message: 'Code de parrainage utilisé avec succès',
+      pointsParrain: POINTS_PARRAIN,
+      pointsFilleul: POINTS_FILLEUL,
+    });
+  } catch (error) {
+    console.error('Erreur dans UtiliserCodeParrainage:', error);
+    return res.status(500).json({ message: 'Erreur serveur', error: error.message });
+  }
+};                                                                                                                                                                                                                           recompenses.mjs : import { convertCurrency } from "../config/exchangerate.mjs";
+
+// Constantes pour les points de parrainage
+export const POINTS_PARRAIN = 75;
+export const POINTS_FILLEUL = 25;
+
+const niveaux = [
+  { nom: 'GBAO', pointsRequis: 0, recompenses: { reduction: 0, livraisonsGratuites: 0, articlesOfferts: 0 }, badgeId: null },
+  { nom: 'Supporteur', pointsRequis: 500, recompenses: { reduction: 5, livraisonsGratuites: 0, articlesOfferts: 0 }, badgeId: null },
+  { nom: 'FANA', pointsRequis: 1500, recompenses: { reduction: 10, livraisonsGratuites: 0, articlesOfferts: 0 }, badgeId: null },
+  { nom: 'VRAI FANA', pointsRequis: 3000, recompenses: { reduction: 15, livraisonsGratuites: 0, articlesOfferts: 0 }, badgeId: null },
+  { nom: 'CR7 VS MESSI', pointsRequis: 7000, recompenses: { reduction: 20, livraisonsGratuites: 2, articlesOfferts: 1 }, badgeId: null },
+  { nom: 'GOAT', pointsRequis: 15000, recompenses: { reduction: 25, livraisonsGratuites: 4, articlesOfferts: 2 }, badgeId: null },
+];
+
+export const calculerNiveau = (pointsFidélité) => {
+  const niveauActuel = niveaux.reduce((prev, curr) => 
+    pointsFidélité >= curr.pointsRequis ? curr : prev, niveaux[0]);
+  
+  const indexNiveau = niveaux.findIndex(n => n.nom === niveauActuel.nom);
+  const niveauSuivant = niveaux[indexNiveau + 1] || null;
+  
+  const progression = niveauSuivant 
+    ? ((pointsFidélité - niveauActuel.pointsRequis) / (niveauSuivant.pointsRequis - niveauActuel.pointsRequis)) * 100 
+    : 100;
+
+  return {
+    niveauActuel: niveauActuel.nom,
+    pointsRequis: niveauActuel.pointsRequis,
+    recompenses: niveauActuel.recompenses,
+    badgeId: niveauActuel.badgeId,
+    progression: Number(progression.toFixed(2)),
+    pointsPourNiveauSuivant: niveauSuivant ? niveauSuivant.pointsRequis - pointsFidélité : 0,
+    tousLesNiveaux: niveaux.map(n => ({
+      nom: n.nom,
+      pointsRequis: n.pointsRequis,
+      recompenses: n.recompenses,
+      badgeId: n.badgeId,
+    })),
+  };
+};
+
+export const calculerPointsPaiement = async (montant, devise = 'FCFA') => {
+  const montantFCFA = devise !== 'FCFA' ? await convertCurrency(montant, devise, 'FCFA') : montant;
+  if (montantFCFA < 0) throw new Error('Le montant ne peut pas être négatif');
+  if (!['FCFA', 'EUR', 'USD'].includes(devise)) throw new Error('Devise non supportée');
+  if (montantFCFA < 15000) return 20;
+  if (montantFCFA < 50000) return 50;
+  if (montantFCFA < 100000) return 100;
+  if (montantFCFA < 150000) return 150;
+  if (montantFCFA < 300000) return 300;
+  if (montantFCFA < 500000) return 500;
+  return 1000;
+};                                                                                                                                                                                                      utilisateur controlleur : import mongoose from 'mongoose';
+import { MongoConnected } from "../Database/database.mjs";
+import { UtilisateurSchemaModel } from "../Models/utilisateur.model.mjs";
+import { ProduitSchemaModel } from "../models/Produit.model.mjs";
+
+export const GetUtilisateurConnecte = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== "ok") {
+      return res.status(500).json({ message: "Erreur de connexion à la base de données" });
+    }
+
+    const userId = req.user?.id;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: "Token invalide ou manquant" });
+    }
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId)
+      .select("-motDePasse")
+      .populate('favoris', 'nom prix discount tailles')
+      .populate('badges.badgeId', 'nom description image icon color rarity niveau')
+      .populate('achievements.defiId', 'nom description points critere')
+      .lean();
+    if (!utilisateur) {
+      return res.status(404).json({ message: "Utilisateur non trouvé" });
+    }
+
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: "Compte inactif" });
+    }
+
+    res.status(200).json({
+      id: utilisateur._id,
+      nom: utilisateur.nom,
+      email: utilisateur.email,
+      typeConnexion: utilisateur.typeConnexion,
+      uidFirebase: utilisateur.uidFirebase || null,
+      rôle: utilisateur.rôle,
+      adresse: utilisateur.adresse || { rue: "", ville: "", codePostal: "", pays: "" },
+      telephone: utilisateur.telephone || "",
+      photo: utilisateur.photo || null,
+      favoris: utilisateur.favoris || [],
+      pointsFidélité: utilisateur.pointsFidélité,
+      codeParrainage: utilisateur.codeParrainage,
+      personnesParrainees: utilisateur.personnesParrainees || [],
+      pointsParrainage: utilisateur.pointsParrainage,
+      totalEarned: utilisateur.totalEarned || 0,
+      reductionAppliquée: utilisateur.reductionAppliquée || 0,
+      badges: utilisateur.badges || [],
+      achievements: utilisateur.achievements || [],
+      streaks: utilisateur.streaks || {
+        currentLoginStreak: 0,
+        longestLoginStreak: 0,
+        lastLoginDate: null,
+      },
+      createdAt: utilisateur.createdAt,
+      updatedAt: utilisateur.updatedAt,
+    });
+  } catch (error) {
+    console.error("Erreur dans GetUtilisateurConnecte:", error);
+    res.status(500).json({ message: "Erreur serveur", error: error.message });
+  }
+};
+
+export const UpdateUtilisateur = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== "ok") {
+      return res.status(500).json({ message: "Erreur de connexion à la base de données" });
+    }
+
+    const userId = req.user?.id;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: "Token invalide ou manquant" });
+    }
+
+    const { nom, email, telephone, adresse, photo } = req.body;
+    const updates = {};
+    if (nom) updates.nom = nom;
+    if (email) updates.email = email;
+    if (telephone) updates.telephone = telephone;
+    if (adresse) updates.adresse = adresse;
+    if (photo) updates.photo = photo;
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId);
+    if (!utilisateur) {
+      return res.status(404).json({ message: "Utilisateur non trouvé" });
+    }
+
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: "Compte inactif" });
+    }
+
+    Object.assign(utilisateur, updates);
+    await utilisateur.save();
+
+    const updatedUtilisateur = await UtilisateurSchemaModel.findById(userId)
+      .select("-motDePasse")
+      .populate('favoris', 'nom prix discount tailles')
+      .populate('badges.badgeId', 'nom description image icon color rarity niveau')
+      .populate('achievements.defiId', 'nom description points critere')
+      .lean();
+
+    res.status(200).json({
+      message: "Utilisateur mis à jour",
+      utilisateur: {
+        id: updatedUtilisateur._id,
+        nom: updatedUtilisateur.nom,
+        email: updatedUtilisateur.email,
+        typeConnexion: updatedUtilisateur.typeConnexion,
+        uidFirebase: updatedUtilisateur.uidFirebase || null,
+        rôle: updatedUtilisateur.rôle,
+        adresse: updatedUtilisateur.adresse || { rue: "", ville: "", codePostal: "", pays: "" },
+        telephone: updatedUtilisateur.telephone || "",
+        photo: updatedUtilisateur.photo || null,
+        favoris: updatedUtilisateur.favoris || [],
+        pointsFidélité: updatedUtilisateur.pointsFidélité,
+        codeParrainage: updatedUtilisateur.codeParrainage,
+        personnesParrainees: updatedUtilisateur.personnesParrainees || [],
+        pointsParrainage: updatedUtilisateur.pointsParrainage,
+        totalEarned: updatedUtilisateur.totalEarned || 0,
+        reductionAppliquée: updatedUtilisateur.reductionAppliquée || 0,
+        badges: updatedUtilisateur.badges || [],
+        achievements: updatedUtilisateur.achievements || [],
+        streaks: updatedUtilisateur.streaks || {
+          currentLoginStreak: 0,
+          longestLoginStreak: 0,
+          lastLoginDate: null,
+        },
+        createdAt: updatedUtilisateur.createdAt,
+        updatedAt: updatedUtilisateur.updatedAt,
+      },
+    });
+  } catch (error) {
+    console.error("Erreur dans UpdateUtilisateur:", error);
+    res.status(500).json({ message: "Erreur serveur", error: error.message });
+  }
+};
+
+export const AddFavori = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== "ok") {
+      return res.status(500).json({ message: "Erreur de connexion à la base de données" });
+    }
+
+    const userId = req.user?.id;
+    const { produitId } = req.body;
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: "Token invalide ou manquant" });
+    }
+    if (!produitId || !mongoose.Types.ObjectId.isValid(produitId)) {
+      return res.status(400).json({ message: "ID de produit invalide" });
+    }
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId);
+    if (!utilisateur) {
+      return res.status(404).json({ message: "Utilisateur non trouvé" });
+    }
+
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: "Compte inactif" });
+    }
+
+    const produit = await ProduitSchemaModel.findById(produitId).lean();
+    if (!produit) {
+      return res.status(404).json({ message: "Produit non trouvé" });
+    }
+
+    if (!utilisateur.favoris.includes(produitId)) {
+      utilisateur.favoris.push(produitId);
+      await utilisateur.save();
+    }
+
+    const updatedUtilisateur = await UtilisateurSchemaModel.findById(userId)
+      .select("-motDePasse")
+      .populate('favoris', 'nom prix discount tailles')
+      .populate('badges.badgeId', 'nom description image icon color rarity niveau')
+      .populate('achievements.defiId', 'nom description points critere')
+      .lean();
+
+    res.status(200).json({
+      message: "Produit ajouté aux favoris",
+      utilisateur: {
+        id: updatedUtilisateur._id,
+        nom: updatedUtilisateur.nom,
+        email: updatedUtilisateur.email,
+        typeConnexion: updatedUtilisateur.typeConnexion,
+        uidFirebase: updatedUtilisateur.uidFirebase || null,
+        rôle: updatedUtilisateur.rôle,
+        adresse: updatedUtilisateur.adresse || { rue: "", ville: "", codePostal: "", pays: "" },
+        telephone: updatedUtilisateur.telephone || "",
+        photo: updatedUtilisateur.photo || null,
+        favoris: updatedUtilisateur.favoris || [],
+        pointsFidélité: updatedUtilisateur.pointsFidélité,
+        codeParrainage: updatedUtilisateur.codeParrainage,
+        personnesParrainees: updatedUtilisateur.personnesParrainees || [],
+        pointsParrainage: updatedUtilisateur.pointsParrainage,
+        totalEarned: updatedUtilisateur.totalEarned || 0,
+        reductionAppliquée: updatedUtilisateur.reductionAppliquée || 0,
+        badges: updatedUtilisateur.badges || [],
+        achievements: updatedUtilisateur.achievements || [],
+        streaks: updatedUtilisateur.streaks || {
+          currentLoginStreak: 0,
+          longestLoginStreak: 0,
+          lastLoginDate: null,
+        },
+        createdAt: updatedUtilisateur.createdAt,
+        updatedAt: updatedUtilisateur.updatedAt,
+      },
+    });
+  } catch (error) {
+    console.error("Erreur dans AddFavori:", error);
+    res.status(500).json({ message: "Erreur serveur", error: error.message });
+  }
+};
+
+export const RemoveFavori = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== "ok") {
+      return res.status(500).json({ message: "Erreur de connexion à la base de données" });
+    }
+
+    const userId = req.user?.id;
+    const { produitId } = req.body;
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: "Token invalide ou manquant" });
+    }
+    if (!produitId || !mongoose.Types.ObjectId.isValid(produitId)) {
+      return res.status(400).json({ message: "ID de produit invalide" });
+    }
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId);
+    if (!utilisateur) {
+      return res.status(404).json({ message: "Utilisateur non trouvé" });
+    }
+
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: "Compte inactif" });
+    }
+
+    utilisateur.favoris = utilisateur.favoris.filter(id => id.toString() !== produitId);
+    await utilisateur.save();
+
+    const updatedUtilisateur = await UtilisateurSchemaModel.findById(userId)
+      .select("-motDePasse")
+      .populate('favoris', 'nom prix discount tailles')
+      .populate('badges.badgeId', 'nom description image icon color rarity niveau')
+      .populate('achievements.defiId', 'nom description points critere')
+      .lean();
+
+    res.status(200).json({
+      message: "Produit retiré des favoris",
+      utilisateur: {
+        id: updatedUtilisateur._id,
+        nom: updatedUtilisateur.nom,
+        email: updatedUtilisateur.email,
+        typeConnexion: updatedUtilisateur.typeConnexion,
+        uidFirebase: updatedUtilisateur.uidFirebase || null,
+        rôle: updatedUtilisateur.rôle,
+        adresse: updatedUtilisateur.adresse || { rue: "", ville: "", codePostal: "", pays: "" },
+        telephone: updatedUtilisateur.telephone || "",
+        photo: updatedUtilisateur.photo || null,
+        favoris: updatedUtilisateur.favoris || [],
+        pointsFidélité: updatedUtilisateur.pointsFidélité,
+        codeParrainage: updatedUtilisateur.codeParrainage,
+        personnesParrainees: updatedUtilisateur.personnesParrainees || [],
+        pointsParrainage: updatedUtilisateur.pointsParrainage,
+        totalEarned: updatedUtilisateur.totalEarned || 0,
+        reductionAppliquée: updatedUtilisateur.reductionAppliquée || 0,
+        badges: updatedUtilisateur.badges || [],
+        achievements: updatedUtilisateur.achievements || [],
+        streaks: updatedUtilisateur.streaks || {
+          currentLoginStreak: 0,
+          longestLoginStreak: 0,
+          lastLoginDate: null,
+        },
+        createdAt: updatedUtilisateur.createdAt,
+        updatedAt: updatedUtilisateur.updatedAt,
+      },
+    });
+  } catch (error) {
+    console.error("Erreur dans RemoveFavori:", error);
+    res.status(500).json({ message: "Erreur serveur", error: error.message });
+  }
+};                                                                                                                                                                                                                                                          profil controlleur : import mongoose from 'mongoose';
+import { MongoConnected } from '../Database/database.mjs';
+import { UtilisateurSchemaModel } from '../Models/utilisateur.model.mjs';
+import { PanierSchemaModel } from '../models/Panier.model.mjs';
+import { CommandeSchemaModel } from '../models/Commande.model.mjs';
+import { PaiementSchemaModel } from '../Models/paiement.model.mjs';
+import { HistoriquePaiementSchemaModel } from '../Models/historique_Paiement.model.mjs';
+import cloudinary from '../config/cloudinary.mjs';
+
+
+export const ObtenirProfilUtilisateur = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== 'ok') {
+      return res.status(500).json({ message: 'Erreur de connexion à la base de données' });
+    }
+
+    const userId = req.user?.id;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: 'Utilisateur non connecté' });
+    }
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId)
+      .select('-motDePasse')
+      .lean();
+    if (!utilisateur) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: 'Compte inactif' });
+    }
+
+    // Inclure reductionAppliquée dans la réponse
+    const utilisateurData = {
+      ...utilisateur,
+      reductionAppliquée: utilisateur.reductionAppliquée || 0,
+    };
+
+    res.status(200).json(utilisateurData);
+  } catch (error) {
+    console.error('Erreur dans ObtenirProfilUtilisateur:', error);
+    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+  }
+};
+
+export const ModifierProfilUtilisateur = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== 'ok') {
+      return res.status(500).json({ message: 'Erreur de connexion à la base de données' });
+    }
+
+    const userId = req.user?.id;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: 'Utilisateur non connecté' });
+    }
+
+    const { nom, telephone, adresse } = req.body;
+    const file = req.file;
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId);
+    if (!utilisateur) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: 'Compte inactif' });
+    }
+
+    // Validation des champs
+    if (nom) utilisateur.nom = nom;
+    if (telephone && !/^\+?[1-9]\d{1,14}$/.test(telephone)) {
+      return res.status(400).json({ message: 'Numéro de téléphone invalide (2 à 15 chiffres)' });
+    }
+    utilisateur.telephone = telephone || utilisateur.telephone;
+
+    if (adresse) {
+      try {
+        const parsedAdresse = typeof adresse === 'string' ? JSON.parse(adresse) : adresse;
+        if (!parsedAdresse.rue || !parsedAdresse.ville || !parsedAdresse.codePostal || !parsedAdresse.pays) {
+          return res.status(400).json({ message: 'Adresse incomplète (rue, ville, codePostal, pays requis)' });
+        }
+        utilisateur.adresse = parsedAdresse;
+      } catch (error) {
+        return res.status(400).json({ message: 'Format d’adresse invalide' });
+      }
+    }
+
+    // Gestion de la photo de profil avec Cloudinary
+    if (file) {
+      // Supprimer l’ancienne photo si elle existe
+      if (utilisateur.photo) {
+        const publicId = utilisateur.photo.split('/').pop().split('.')[0];
+        await cloudinary.uploader.destroy(publicId).catch(err => {
+          console.error('Erreur suppression ancienne photo Cloudinary:', err);
+        });
+      }
+
+      // Uploader la nouvelle photo
+      const result = await cloudinary.uploader.upload(file.path);
+      utilisateur.photo = result.secure_url;
+    }
+
+    await utilisateur.save();
+
+    // Préparer les données à renvoyer
+    const utilisateurData = utilisateur.toObject({ virtuals: true });
+    delete utilisateurData.motDePasse;
+
+    res.status(200).json({
+      message: 'Profil mis à jour avec succès',
+      utilisateur: utilisateurData,
+    });
+  } catch (error) {
+    console.error('Erreur dans ModifierProfilUtilisateur:', error);
+    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+  }
+};
+
+export const SupprimerCompteUtilisateur = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== 'ok') {
+      return res.status(500).json({ message: 'Erreur de connexion à la base de données' });
+    }
+
+    const userId = req.user?.id;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: 'Utilisateur non connecté' });
+    }
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId);
+    if (!utilisateur) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: 'Compte inactif' });
+    }
+
+    // Supprimer la photo de profil de Cloudinary
+    if (utilisateur.photo) {
+      const publicId = utilisateur.photo.split('/').pop().split('.')[0];
+      await cloudinary.uploader.destroy(publicId).catch(err => {
+        console.error('Erreur suppression photo Cloudinary:', err);
+      });
+    }
+
+    // Suppressions en cascade
+    await Promise.all([
+      // Supprimer le panier
+      PanierSchemaModel.deleteOne({ utilisateur: userId }),
+      // Supprimer les commandes
+      CommandeSchemaModel.deleteMany({ utilisateur: userId }),
+      // Supprimer les paiements
+      PaiementSchemaModel.deleteMany({ utilisateur: userId }),
+      // Supprimer l’historique des paiements
+      HistoriquePaiementSchemaModel.deleteMany({ utilisateur: userId }),
+      // Retirer l’utilisateur des personnesParrainees des autres utilisateurs
+      UtilisateurSchemaModel.updateMany(
+        { personnesParrainees: userId },
+        { $pull: { personnesParrainees: userId } }
+      ),
+    ]);
+
+    // Supprimer l’utilisateur
+    await UtilisateurSchemaModel.findByIdAndDelete(userId);
+
+    res.status(200).json({ message: 'Compte supprimé avec succès' });
+  } catch (error) {
+    console.error('Erreur dans SupprimerCompteUtilisateur:', error);
+    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+  }
+};
+
+
+
+
+
+
+front register 
+
+
+
+'use client';
+
+import { useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { z } from 'zod';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { toast } from 'sonner';
+import { Eye, EyeOff, ShoppingBag, Phone } from 'lucide-react';
+import Image from 'next/image';
+import { Button } from '@/components/ui/button';
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form';
+import { Input } from '@/components/ui/input';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { signInWithPopup, signInWithPhoneNumber, RecaptchaVerifier, auth, googleProvider, handleFirebaseError, signInWithEmailAndPassword } from '@/lib/firebase';
+
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
+
+const registerSchema = z
+  .object({
+    name: z.string().min(2, 'Le nom doit contenir au moins 2 caractères'),
+    email: z.string().email('Adresse email invalide'),
+    telephone: z
+      .string()
+      .optional()
+      .refine(
+        (val) => !val || /^\+?[1-9]\d{1,14}$/.test(val),
+        'Numéro de téléphone invalide (2 à 15 chiffres)',
+      ),
+    adresse: z
+      .object({
+        rue: z.string().optional(),
+        ville: z.string().optional(),
+        codePostal: z.string().optional(),
+        pays: z.string().optional(),
+      })
+      .optional()
+      .refine(
+        (val) =>
+          !val ||
+          (val.rue && val.ville && val.codePostal && val.pays) ||
+          (!val.rue && !val.ville && !val.codePostal && !val.pays),
+        {
+          message: 'L’adresse doit être complète (rue, ville, code postal, pays) ou vide',
+        },
+      ),
+    password: z.string().min(8, 'Le mot de passe doit contenir au moins 8 caractères'),
+    confirmPassword: z.string(),
+    codeParrainage: z.string().optional(),
+    terms: z.boolean().refine((val) => val === true, {
+      message: 'Vous devez accepter les conditions générales',
+    }),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: 'Les mots de passe ne correspondent pas',
+    path: ['confirmPassword'],
+  });
+
+type RegisterFormValues = z.infer<typeof registerSchema>;
+
+export default function RegisterPage() {
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [phone, setPhone] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [confirmationResult, setConfirmationResult] = useState(null);
+  const [showPhoneModal, setShowPhoneModal] = useState(false);
+
+  const router = useRouter();
+
+  const form = useForm<RegisterFormValues>({
+    resolver: zodResolver(registerSchema),
+    defaultValues: {
+      name: '',
+      email: '',
+      telephone: '',
+      adresse: { rue: '', ville: '', codePostal: '', pays: '' },
+      password: '',
+      confirmPassword: '',
+      codeParrainage: '',
+      terms: false,
+    },
+  });
+
+  const onSubmit = async (data: RegisterFormValues) => {
+    setIsLoading(true);
+    try {
+      console.log('Envoi de la requête d’inscription:', data);
+      const res = await fetch(`${BACKEND_URL}/api/register/email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nom: data.name,
+          email: data.email,
+          motDePasse: data.password,
+          confirmationMotDePasse: data.confirmPassword,
+          telephone: data.telephone || undefined,
+          adresse:
+            data.adresse?.rue && data.adresse?.ville && data.adresse?.codePostal && data.adresse?.pays
+              ? data.adresse
+              : undefined,
+          codeParrainage: data.codeParrainage || undefined,
+        }),
+      });
+
+      const result = await res.json();
+      console.log('Réponse API:', res.status, result);
+
+      if (!res.ok) {
+        throw new Error(result.message || 'Erreur lors de la création du compte');
+      }
+
+      const userCredential = await signInWithEmailAndPassword(auth, data.email, data.password);
+      const idToken = await userCredential.user.getIdToken();
+      console.log('ID Token obtenu:', idToken);
+
+      localStorage.setItem('token', idToken);
+      toast.success('Inscription réussie !');
+      router.push(result.utilisateur.rôle === 'admin' ? '/admin/dashboard' : '/profile');
+    } catch (error) {
+      const message = handleFirebaseError(error) || error.message;
+      console.error('Erreur lors de l’inscription:', error);
+      toast.error(message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    setIsLoading(true);
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const idToken = await result.user.getIdToken();
+      console.log('ID Token obtenu:', idToken);
+
+      const res = await fetch(`${BACKEND_URL}/api/login/google`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        localStorage.setItem('token', idToken);
+        toast.success(data.message || 'Connexion Google réussie');
+        router.push(data.utilisateur.rôle === 'admin' ? '/admin/dashboard' : '/profile');
+      } else {
+        throw new Error(data.message || 'Erreur lors de la connexion Google');
+      }
+    } catch (error) {
+      const message = handleFirebaseError(error) || error.message;
+      console.error('Erreur lors de la connexion Google:', error);
+      toast.error(message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const sendVerificationCode = async () => {
+    if (!phone) {
+      toast.error('Veuillez entrer un numéro de téléphone');
+      return;
+    }
+    try {
+      const appVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
+        size: 'invisible',
+      });
+      const result = await signInWithPhoneNumber(auth, phone, appVerifier);
+      setConfirmationResult(result);
+      setShowPhoneModal(true);
+      toast.success('Code envoyé par SMS');
+    } catch (error) {
+      const message = handleFirebaseError(error) || error.message;
+      console.error('Erreur lors de l’envoi du code:', error);
+      toast.error(message);
+    }
+  };
+
+  const verifyCodeAndSignIn = async () => {
+    if (!verificationCode) {
+      toast.error('Veuillez entrer le code reçu par SMS');
+      return;
+    }
+    if (!confirmationResult) {
+      toast.error('Vous devez d’abord envoyer le code');
+      return;
+    }
+    try {
+      const result = await confirmationResult.confirm(verificationCode);
+      const idToken = await result.user.getIdToken();
+      console.log('ID Token obtenu:', idToken);
+
+      const res = await fetch(`${BACKEND_URL}/api/login/phone`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        localStorage.setItem('token', idToken);
+        toast.success(data.message || 'Connexion par téléphone réussie');
+        router.push(data.utilisateur.rôle === 'admin' ? '/admin/dashboard' : '/profile');
+      } else {
+        throw new Error(data.message || 'Erreur lors de la connexion par téléphone');
+      }
+    } catch (error) {
+      const message = handleFirebaseError(error) || error.message;
+      console.error('Erreur lors de la vérification du code:', error);
+      toast.error(message);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-gray-50 dark:bg-gray-900">
+      <div className="sm:mx-auto sm:w-full sm:max-w-md">
+        <div className="flex justify-center">
+          <div className="bg-orange-500 text-white p-3 rounded-full">
+            <ShoppingBag className="h-8 w-8" />
+          </div>
+        </div>
+        <h2 className="mt-6 text-center text-3xl font-bold tracking-tight text-gray-900 dark:text-gray-100">
+          Créer un compte
+        </h2>
+        <p className="mt-2 text-center text-sm text-gray-600 dark:text-gray-400">
+          Ou{' '}
+          <Link
+            href="/auth/login"
+            className="font-medium text-orange-500 hover:text-orange-600 dark:text-orange-400 dark:hover:text-orange-300"
+          >
+            connectez-vous à votre compte existant
+          </Link>
+        </p>
+      </div>
+
+      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
+        <div className="bg-white dark:bg-gray-800 py-8 px-4 shadow sm:rounded-lg sm:px-10">
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+              <FormField
+                control={form.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Nom complet</FormLabel>
+                    <FormControl>
+                      <Input placeholder="Jean Parfait" {...field} disabled={isLoading} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="email"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Adresse email</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="email"
+                        placeholder="votre@email.com"
+                        {...field}
+                        disabled={isLoading}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="telephone"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Téléphone (optionnel)</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="+2250102030405"
+                        {...field}
+                        disabled={isLoading}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="adresse.rue"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Rue (optionnel)</FormLabel>
+                    <FormControl>
+                      <Input placeholder="123 Rue Principale" {...field} disabled={isLoading} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="adresse.ville"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Ville (optionnel)</FormLabel>
+                    <FormControl>
+                      <Input placeholder="Abidjan" {...field} disabled={isLoading} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="adresse.codePostal"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Code postal (optionnel)</FormLabel>
+                    <FormControl>
+                      <Input placeholder="12345" {...field} disabled={isLoading} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="adresse.pays"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Pays (optionnel)</FormLabel>
+                    <FormControl>
+                      <Input placeholder="Côte d'Ivoire" {...field} disabled={isLoading} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="codeParrainage"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Code de parrainage (optionnel)</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="Entrez un code de parrainage"
+                        {...field}
+                        disabled={isLoading}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="password"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Mot de passe</FormLabel>
+                    <FormControl>
+                      <div className="relative">
+                        <Input
+                          type={showPassword ? 'text' : 'password'}
+                          placeholder="••••••••"
+                          {...field}
+                          disabled={isLoading}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="absolute right-0 top-0 h-full px-3"
+                          onClick={() => setShowPassword(!showPassword)}
+                        >
+                          {showPassword ? (
+                            <EyeOff className="h-4 w-4 text-gray-500" />
+                          ) : (
+                            <Eye className="h-4 w-4 text-gray-500" />
+                          )}
+                        </Button>
+                      </div>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="confirmPassword"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Confirmer le mot de passe</FormLabel>
+                    <FormControl>
+                      <div className="relative">
+                        <Input
+                          type={showConfirmPassword ? 'text' : 'password'}
+                          placeholder="••••••••"
+                          {...field}
+                          disabled={isLoading}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="absolute right-0 top-0 h-full px-3"
+                          onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                        >
+                          {showConfirmPassword ? (
+                            <EyeOff className="h-4 w-4 text-gray-500" />
+                          ) : (
+                            <Eye className="h-4 w-4 text-gray-500" />
+                          )}
+                        </Button>
+                      </div>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="terms"
+                render={({ field }) => (
+                  <FormItem className="flex flex-row items-start space-x-3 space-y-0">
+                    <FormControl>
+                      <Checkbox
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        disabled={isLoading}
+                      />
+                    </FormControl>
+                    <div className="space-y-1 leading-none">
+                      <FormLabel className="text-sm font-normal">
+                        J'accepte les{' '}
+                        <Link
+                          href="/terms"
+                          className="text-orange-500 hover:text-orange-600 dark:text-orange-400 dark:hover:text-orange-300"
+                        >
+                          conditions générales
+                        </Link>{' '}
+                        et la{' '}
+                        <Link
+                          href="/privacy"
+                          className="text-orange-500 hover:text-orange-600 dark:text-orange-400 dark:hover:text-orange-300"
+                        >
+                          politique de confidentialité
+                        </Link>
+                      </FormLabel>
+                      <FormMessage />
+                    </div>
+                  </FormItem>
+                )}
+              />
+              <Button
+                type="submit"
+                className="w-full bg-orange-500 hover:bg-orange-600 text-white"
+                disabled={isLoading}
+              >
+                {isLoading ? 'Création en cours...' : 'Créer un compte'}
+              </Button>
+            </form>
+          </Form>
+
+          <div className="mt-6">
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-gray-300 dark:border-gray-700" />
+              </div>
+              <div className="relative flex justify-center text-sm">
+                <span className="bg-white dark:bg-gray-800 px-2 text-gray-500 dark:text-gray-400">
+                  Ou continuer avec
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              <Button
+                variant="outline"
+                onClick={handleGoogleSignIn}
+                className="flex items-center gap-2 justify-center"
+                disabled={isLoading}
+              >
+                <Image
+                  src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg"
+                  alt="Google"
+                  width={20}
+                  height={20}
+                />
+                Google
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setShowPhoneModal(true)}
+                className="flex items-center gap-2 justify-center"
+                disabled={isLoading}
+              >
+                <Phone className="w-5 h-5" />
+                Téléphone
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <Dialog open={showPhoneModal} onOpenChange={setShowPhoneModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Inscription par téléphone</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Input
+              placeholder="Ex: +2250102030405"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              disabled={isLoading}
+            />
+            <Button onClick={sendVerificationCode} disabled={isLoading}>
+              Envoyer le code
+            </Button>
+            <Input
+              placeholder="Code reçu par SMS"
+              value={verificationCode}
+              onChange={(e) => setVerificationCode(e.target.value)}
+              disabled={isLoading}
+            />
+            <Button onClick={verifyCodeAndSignIn} disabled={isLoading}>
+              Valider le code
+            </Button>
+            <div id="recaptcha-container" />
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+// SljhwBLU
+
+
+
+
+
+requete grok modif rewards 
+
+
+
+
+en fait avant la page utilisaient des constants qui etaient dans mon fichier lib dans mon front : import { RewardLevel, Achievement } from '../types';
+
+export const REWARD_LEVELS: RewardLevel[] = [
+  {
+    level: 1,
+    name: "Fan Débutant",
+    minPoints: 0,
+    benefits: ["Accès aux promotions exclusives"],
+    discount: 0,
+    color: "#6B7280"
+  },
+  {
+    level: 2,
+    name: "Supporter",
+    minPoints: 500,
+    benefits: ["5% de réduction", "Livraison gratuite dès 50€"],
+    discount: 5,
+    color: "#10B981"
+  },
+  {
+    level: 3,
+    name: "Fan Passionné",
+    minPoints: 1500,
+    benefits: ["10% de réduction", "Accès anticipé aux nouveautés"],
+    discount: 10,
+    color: "#3B82F6"
+  },
+  {
+    level: 4,
+    name: "Collectionneur",
+    minPoints: 3000,
+    benefits: ["15% de réduction", "Produits exclusifs", "Support prioritaire"],
+    discount: 15,
+    color: "#8B5CF6"
+  },
+  {
+    level: 5,
+    name: "Légende",
+    minPoints: 6000,
+    benefits: ["20% de réduction", "Accès VIP", "Cadeaux personnalisés"],
+    discount: 20,
+    color: "#F59E0B"
+  }
+];
+
+export const ACHIEVEMENTS_TEMPLATES: Omit<Achievement, 'id' | 'progress' | 'completed' | 'completedAt'>[] = [
+  {
+    name: "Premier Achat",
+    description: "Effectuer votre première commande",
+    icon: "ShoppingBag",
+    target: 1,
+    reward: { points: 100 }
+  },
+  {
+    name: "Fidèle Client",
+    description: "Effectuer 10 commandes",
+    icon: "Heart",
+    target: 10,
+    reward: { points: 500 }
+  },
+  {
+    name: "Gros Dépensier",
+    description: "Dépenser plus de 500€",
+    icon: "CreditCard",
+    target: 500,
+    reward: { points: 1000 }
+  },
+  {
+    name: "Collectionneur",
+    description: "Acheter 50 maillots différents",
+    icon: "Trophy",
+    target: 50,
+    reward: { points: 2000 }
+  },
+  {
+    name: "Parrain",
+    description: "Parrainer 5 amis",
+    icon: "Users",
+    target: 5,
+    reward: { points: 750 }
+  },
+  {
+    name: "Critique",
+    description: "Laisser 20 avis produits",
+    icon: "Star",
+    target: 20,
+    reward: { points: 300 }
+  },
+  {
+    name: "Assidu",
+    description: "Se connecter 30 jours consécutifs",
+    icon: "Calendar",
+    target: 30,
+    reward: { points: 500 }
+  }
+];
+
+export const POINTS_RULES = {
+  ORDER_COMPLETION: 10, // Points par euro dépensé
+  REVIEW_PRODUCT: 25,
+  REFERRAL_SUCCESS: 200,
+  DAILY_LOGIN: 5,
+  FIRST_ORDER: 100,
+  BIRTHDAY_BONUS: 500,
+  SOCIAL_SHARE: 15
+};                                                                                                                                                                                                        ce qui fait que quand je supprime ce fichier je n'ai plus acces à ma page rewards . je t'envoi le controlleur recompenses,parrainage,defi,et recompenses.mjs afin que tu comprennes mieux et m'aides à resoudre cela .                                                                                                                                                             controlleur recompenses : import mongoose from 'mongoose';
+import { MongoConnected } from '../Database/database.mjs';
+import { UtilisateurSchemaModel } from '../Models/utilisateur.model.mjs';
+import { CommandeSchemaModel } from '../models/Commande.model.mjs';
+import { DefiSchemaModel } from '../Models/defi.model.mjs';
+
+import { convertCurrency } from '../config/exchangerate.mjs';
+import { calculerNiveau } from '../utils/recompenses.mjs';
+
+export const getUserRewards = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== 'ok') {
+      return res.status(500).json({ message: 'Erreur de connexion à la base de données' });
+    }
+
+    const userId = req.user?.id;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: 'Utilisateur non connecté' });
+    }
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId)
+      .populate('badges.badgeId', 'nom description image icon color rarity niveau')
+      .populate('achievements.defiId', 'nom description points critere')
+      .lean();
+    if (!utilisateur) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: 'Compte inactif' });
+    }
+
+    const orders = await CommandeSchemaModel.find({ userId }).lean();
+    const totalOrders = orders.length;
+    const totalSpentInXOF = orders.reduce((sum, order) => sum + order.total, 0);
+    const totalSpent = await convertCurrency(totalSpentInXOF, 'XOF', 'XOF');
+
+    const niveauInfo = calculerNiveau(utilisateur.pointsFidélité);
+
+    // Vérifier les achievements
+    const defis = await DefiSchemaModel.find({ actif: true }).lean();
+    const achievements = await Promise.all(defis.map(async (defi) => {
+      let progress = 0;
+      let completed = false;
+      if (defi.critere.type === 'achat') {
+        progress = totalSpent;
+        completed = progress >= defi.critere.valeur;
+      } else if (defi.critere.type === 'parrainage') {
+        progress = utilisateur.personnesParrainees.length;
+        completed = progress >= defi.critere.valeur;
+      } else if (defi.critere.type === 'connexion') {
+        progress = utilisateur.streaks.currentLoginStreak || 0;
+        completed = progress >= defi.critere.valeur;
+      }
+
+      const userAchievement = utilisateur.achievements.find(a => a.defiId.toString() === defi._id.toString()) || {};
+      return {
+        id: defi._id.toString(),
+        name: defi.nom,
+        description: defi.description,
+        icon: 'Trophy', // À adapter selon le design
+        progress,
+        target: defi.critere.valeur,
+        completed,
+        completedAt: userAchievement.completedAt,
+        claimed: userAchievement.claimed || false,
+        reward: { points: defi.points },
+      };
+    }));
+
+    const rewardsData = {
+      points: utilisateur.pointsFidélité || 0,
+      level: niveauInfo.niveauActuel,
+      totalSpent,
+      totalOrders,
+      badges: utilisateur.badges.map(b => ({
+        id: b.badgeId._id.toString(),
+        name: b.badgeId.nom,
+        description: b.badgeId.description,
+        icon: b.badgeId.icon,
+        color: b.badgeId.color,
+        rarity: b.badgeId.rarity,
+        unlockedAt: b.unlockedAt,
+      })) || [],
+      streaks: utilisateur.streaks || {
+        currentLoginStreak: 0,
+        longestLoginStreak: 0,
+        lastLoginDate: null,
+      },
+      achievements,
+      referrals: {
+        code: utilisateur.codeParrainage || '',
+        referredUsers: utilisateur.personnesParrainees.map(id => id.toString()) || [],
+        totalEarned: utilisateur.totalEarned || 0,
+      },
+      niveauInfo,
+    };
+
+    res.status(200).json(rewardsData);
+  } catch (error) {
+    console.error('Erreur dans getUserRewards:', error);
+    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+  }
+};
+
+export const claimAchievement = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== 'ok') {
+      return res.status(500).json({ message: 'Erreur de connexion à la base de données' });
+    }
+
+    const userId = req.user?.id;
+    const { defiId } = req.body;
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: 'Utilisateur non connecté' });
+    }
+    if (!defiId || !mongoose.Types.ObjectId.isValid(defiId)) {
+      return res.status(400).json({ message: 'ID de défi invalide' });
+    }
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId);
+    if (!utilisateur) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: 'Compte inactif' });
+    }
+
+    const defi = await DefiSchemaModel.findById(defiId);
+    if (!defi) {
+      return res.status(404).json({ message: 'Défi non trouvé' });
+    }
+
+    const achievement = utilisateur.achievements.find(a => a.defiId.toString() === defiId);
+    if (!achievement) {
+      return res.status(404).json({ message: 'Achievement non trouvé' });
+    }
+
+    if (!achievement.completed) {
+      return res.status(400).json({ message: 'Achievement non complété' });
+    }
+
+    if (achievement.claimed) {
+      return res.status(400).json({ message: 'Récompense déjà réclamée' });
+    }
+
+    utilisateur.pointsFidélité += defi.points;
+    achievement.claimed = true;
+    achievement.completedAt = new Date();
+
+    await utilisateur.save();
+    res.status(200).json({ message: 'Récompense réclamée avec succès', pointsAjoutés: defi.points });
+  } catch (error) {
+    console.error('Erreur dans claimAchievement:', error);
+    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+  }
+};                                                                                                                                                                                                       controlleur defi : import { UtilisateurSchemaModel } from "../Models/utilisateur.model.mjs";
+import { DefiSchemaModel } from "../Models/defi.model.mjs";
+
+
+
+export const CreerDefi = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: 'Token invalide ou manquant' });
+    }
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId);
+    if (!utilisateur || utilisateur.rôle !== 'admin') {
+      return res.status(403).json({ message: 'Accès réservé aux administrateurs' });
+    }
+
+    const { nom, description, points, critere } = req.body;
+    if (!nom || !description || !points || !critere || !critere.type || !critere.valeur) {
+      return res.status(400).json({ message: 'Veuillez fournir tous les champs requis' });
+    }
+
+    const defi = new DefiSchemaModel({
+      nom,
+      description,
+      points,
+      critere,
+    });
+
+    await defi.save();
+
+    return res.status(201).json({
+      message: 'Défi créé avec succès',
+      defi,
+    });
+  } catch (error) {
+    console.error('Erreur dans CreerDefi:', error);
+    return res.status(500).json({ message: 'Erreur serveur', error: error.message });
+  }
+};
+
+export const ObtenirDefis = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: 'Token invalide ou manquant' });
+    }
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId).lean();
+    if (!utilisateur) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: 'Compte inactif' });
+    }
+
+    const defis = await DefiSchemaModel.find({ actif: true }).lean();
+    return res.status(200).json(defis.map(d => ({
+      _id: d._id.toString(),
+      nom: d.nom,
+      description: d.description,
+      points: d.points,
+      critere: d.critere,
+      crééLe: d.crééLe.toISOString(),
+    })));
+  } catch (error) {
+    console.error('Erreur dans ObtenirDefis:', error);
+    return res.status(500).json({ message: 'Erreur serveur', error: error.message });
+  }
+};                                                                                                                                                                                                            controlleur parrainage : import mongoose from 'mongoose';
+import { MongoConnected } from "../Database/database.mjs";
+import { UtilisateurSchemaModel } from '../Models/utilisateur.model.mjs';
+import { POINTS_PARRAIN, POINTS_FILLEUL } from '../utils/recompenses.mjs';
+
+export const UtiliserCodeParrainage = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== 'ok') {
+      return res.status(500).json({ message: 'Erreur de connexion à la base de données' });
+    }
+
+    const userId = req.user?.id;
+    const { codeParrainage } = req.body;
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: 'Token invalide ou manquant' });
+    }
+
+    if (!codeParrainage) {
+      return res.status(400).json({ message: 'Code de parrainage requis' });
+    }
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId);
+    if (!utilisateur) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    if (!utilisateur.actif) {
+      return res.status(403).json({ message: 'Compte inactif' });
+    }
+
+    if (utilisateur.codeParrainUtilise) {
+      return res.status(400).json({ message: 'Vous avez déjà utilisé un code de parrainage' });
+    }
+
+    const parrain = await UtilisateurSchemaModel.findOne({ codeParrainage });
+    if (!parrain) {
+      return res.status(400).json({ message: 'Code de parrainage invalide' });
+    }
+
+    if (parrain._id.equals(userId)) {
+      return res.status(400).json({ message: 'Vous ne pouvez pas utiliser votre propre code' });
+    }
+
+    if (parrain.personnesParrainees.includes(userId)) {
+      return res.status(400).json({ message: 'Vous êtes déjà parrainé par cet utilisateur' });
+    }
+
+    // Ajout des points pour le parrain
+    parrain.personnesParrainees.push(userId);
+    parrain.pointsParrainage += POINTS_PARRAIN;
+    parrain.pointsFidélité += POINTS_PARRAIN;
+    parrain.totalEarned += POINTS_PARRAIN;
+    await parrain.save();
+
+    // Ajout des points pour le filleul (utilisateur qui utilise le code)
+    utilisateur.pointsFidélité += POINTS_FILLEUL;
+    utilisateur.totalEarned += POINTS_FILLEUL;
+    utilisateur.codeParrainUtilise = codeParrainage;
+    await utilisateur.save();
+
+    return res.status(200).json({
+      message: 'Code de parrainage utilisé avec succès',
+      pointsParrain: POINTS_PARRAIN,
+      pointsFilleul: POINTS_FILLEUL,
+    });
+  } catch (error) {
+    console.error('Erreur dans UtiliserCodeParrainage:', error);
+    return res.status(500).json({ message: 'Erreur serveur', error: error.message });
+  }
+};                                                                                                                                                                                                   controlleur badge : import mongoose from 'mongoose';
+import { MongoConnected } from '../Database/database.mjs';
+import { BadgeSchemaModel } from '../models/Badge.model.mjs';
+import { UtilisateurSchemaModel } from '../Models/utilisateur.model.mjs';
+import cloudinary from '../config/cloudinary.mjs';
+
+export const getBadges = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== 'ok') {
+      return res.status(500).json({ message: 'Erreur de connexion à la base de données' });
+    }
+
+    const { search } = req.query;
+    const query = {};
+    if (search) query.nom = { $regex: search, $options: 'i' };
+
+    const badges = await BadgeSchemaModel.find(query).lean();
+    res.status(200).json(badges);
+  } catch (error) {
+    console.error('Erreur dans getBadges:', error);
+    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+  }
+};
+
+export const getBadgeById = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== 'ok') {
+      return res.status(500).json({ message: 'Erreur de connexion à la base de données' });
+    }
+
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'ID de badge invalide' });
+    }
+    const badge = await BadgeSchemaModel.findById(id).lean();
+    if (!badge) return res.status(404).json({ message: 'Badge non trouvé' });
+    res.status(200).json(badge);
+  } catch (error) {
+    console.error('Erreur dans getBadgeById:', error);
+    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+  }
+};
+
+export const createBadge = async (req, res) => {
+  try {
+    const db = await MongoConnected();
+    if (db !== 'ok') {
+      return res.status(500).json({ message: 'Erreur de connexion à la base de données' });
+    }
+
+    const userId = req.user?.id;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ message: 'Utilisateur non connecté' });
+    }
+
+    const utilisateur = await UtilisateurSchemaModel.findById(userId).lean();
+    if (!utilisateur || utilisateur.rôle !== 'admin' || !utilisateur.actif) {
+      return res.status(403).json({ message: 'Accès non autorisé' });
+    }
+
+    const { nom, description, icon, color, rarity, niveau } = req.body;
+    const file = req.file;
+
+    if (!nom || !description || !icon || !color || !rarity || !niveau) {
+      return res.status(400).json({ message: 'Champs requis manquants' });
+    }
+
+    let image = '';
+    if (file) {
+      const result = await cloudinary.uploader.upload(file.path);
+      image = result.secure_url;
+    }
+
+    const badge = new BadgeSchemaModel({
+      nom,
+      description,
+      image,
+      icon,
+      color,
+      rarity,
+      niveau,
+    });
+
+    await badge.save();
+    res.status(201).json({ message: 'Badge créé', badge });
+  } catch (error) {
+    console.error('Erreur dans createBadge:', error);
+    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+  }
+};                                                                                                                                                                                                                                      recompenses.mjs : import { convertCurrency } from "../config/exchangerate.mjs";
+
+// Constantes pour les points de parrainage
+export const POINTS_PARRAIN = 75;
+export const POINTS_FILLEUL = 25;
+
+const niveaux = [
+  { nom: 'GBAO', pointsRequis: 0, recompenses: { reduction: 0, livraisonsGratuites: 0, articlesOfferts: 0 }, badgeId: null },
+  { nom: 'Supporteur', pointsRequis: 500, recompenses: { reduction: 5, livraisonsGratuites: 0, articlesOfferts: 0 }, badgeId: null },
+  { nom: 'FANA', pointsRequis: 1500, recompenses: { reduction: 10, livraisonsGratuites: 0, articlesOfferts: 0 }, badgeId: null },
+  { nom: 'VRAI FANA', pointsRequis: 3000, recompenses: { reduction: 15, livraisonsGratuites: 0, articlesOfferts: 0 }, badgeId: null },
+  { nom: 'CR7 VS MESSI', pointsRequis: 7000, recompenses: { reduction: 20, livraisonsGratuites: 2, articlesOfferts: 1 }, badgeId: null },
+  { nom: 'GOAT', pointsRequis: 15000, recompenses: { reduction: 25, livraisonsGratuites: 4, articlesOfferts: 2 }, badgeId: null },
+];
+
+export const calculerNiveau = (pointsFidélité) => {
+  const niveauActuel = niveaux.reduce((prev, curr) => 
+    pointsFidélité >= curr.pointsRequis ? curr : prev, niveaux[0]);
+  
+  const indexNiveau = niveaux.findIndex(n => n.nom === niveauActuel.nom);
+  const niveauSuivant = niveaux[indexNiveau + 1] || null;
+  
+  const progression = niveauSuivant 
+    ? ((pointsFidélité - niveauActuel.pointsRequis) / (niveauSuivant.pointsRequis - niveauActuel.pointsRequis)) * 100 
+    : 100;
+
+  return {
+    niveauActuel: niveauActuel.nom,
+    pointsRequis: niveauActuel.pointsRequis,
+    recompenses: niveauActuel.recompenses,
+    badgeId: niveauActuel.badgeId,
+    progression: Number(progression.toFixed(2)),
+    pointsPourNiveauSuivant: niveauSuivant ? niveauSuivant.pointsRequis - pointsFidélité : 0,
+    tousLesNiveaux: niveaux.map(n => ({
+      nom: n.nom,
+      pointsRequis: n.pointsRequis,
+      recompenses: n.recompenses,
+      badgeId: n.badgeId,
+    })),
+  };
+};
+
+export const calculerPointsPaiement = async (montant, devise = 'FCFA') => {
+  const montantFCFA = devise !== 'FCFA' ? await convertCurrency(montant, devise, 'FCFA') : montant;
+  if (montantFCFA < 0) throw new Error('Le montant ne peut pas être négatif');
+  if (!['FCFA', 'EUR', 'USD'].includes(devise)) throw new Error('Devise non supportée');
+  if (montantFCFA < 15000) return 20;
+  if (montantFCFA < 50000) return 50;
+  if (montantFCFA < 100000) return 100;
+  if (montantFCFA < 150000) return 150;
+  if (montantFCFA < 300000) return 300;
+  if (montantFCFA < 500000) return 500;
+  return 1000;
+};
+SljhwBLU
+
+
+
+
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter, usePathname } from "next/navigation";
+import Link from "next/link";
+import {
+  LayoutDashboard,
+  ShoppingBag,
+  ShoppingCart,
+  Receipt,
+  CreditCard,
+  Users,
+  Gift,
+  Settings,
+} from "lucide-react";
+
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
+const menuItems = [
+  { title: "Dashboard", href: "/admin/dashboard", icon: LayoutDashboard },
+  { title: "Produits", href: "/admin/products", icon: ShoppingBag },
+  { title: "Commandes", href: "/admin/orders", icon: ShoppingCart },
+  { title: "Factures", href: "/admin/invoices", icon: Receipt },
+  { title: "Paiements", href: "/admin/payments", icon: CreditCard },
+  { title: "Clients", href: "/admin/customers", icon: Users },
+  { title: "Cartes Cadeaux", href: "/admin/gift-cards", icon: Gift },
+  { title: "Paramètres", href: "/admin/settings", icon: Settings },
+];
+
+export default function AdminLayout({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const [authorized, setAuthorized] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const checkAuthorization = async () => {
+      const token = localStorage.getItem("token") || sessionStorage.getItem("token");
+      if (!token) {
+        console.log("Aucun token trouvé, redirection vers /auth/login");
+        router.push("/auth/login");
+        return;
+      }
+
+      try {
+        const response = await fetch(`${BACKEND_URL}/api/infos_utilisateur`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error(`Erreur API: ${response.status} ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        console.log("Réponse API utilisateur_connecte:", data);
+
+        if (data.rôle === "admin" || data.rôle === "superadmin") {
+          setAuthorized(true);
+        } else {
+          console.log("Rôle non autorisé:", data.rôle);
+          router.push("/auth/login");
+        }
+      } catch (err) {
+        console.error("Erreur lors de la vérification de l'autorisation:", err);
+        router.push("/auth/login");
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    checkAuthorization();
+  }, [router]);
+
+  if (isLoading) {
+    return <div className="p-8 text-center">Chargement de l'espace administrateur...</div>;
+  }
+
+  if (!authorized) {
+    return null; // Redirection déjà gérée dans useEffect
+  }
+
+  return (
+    <div className="min-h-screen flex bg-gray-50 dark:bg-gray-900">
+      {/* Sidebar */}
+      <aside className="w-64 bg-white dark:bg-gray-800 shadow-md p-5 space-y-4">
+        <h1 className="text-xl font-bold text-gray-800 dark:text-white mb-6">Espace Administration</h1>
+        <nav className="space-y-2">
+          {menuItems.map(({ title, href, icon: Icon }) => {
+            const isActive = pathname.startsWith(href);
+            return (
+              <Link
+                key={href}
+                href={href}
+                className={`flex items-center gap-3 px-3 py-2 rounded-lg transition ${
+                  isActive
+                    ? "bg-blue-500 text-white"
+                    : "text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
+                }`}
+              >
+                <Icon className="h-5 w-5" />
+                <span className="font-medium">{title}</span>
+              </Link>
+            );
+          })}
+        </nav>
+      </aside>
+
+      {/* Content */}
+      <main className="flex-1 p-6">{children}</main>
+    </div>
+  );
+}
+'../models/Commande.model.mjs';
